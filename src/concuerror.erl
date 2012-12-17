@@ -26,7 +26,7 @@
 %%% Debug
 %%%----------------------------------------------------------------------
 
-%%-define(TTY, true).
+-define(TTY, true).
 -ifdef(TTY).
 -define(tty(), ok).
 -else.

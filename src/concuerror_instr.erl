@@ -18,6 +18,7 @@
 -export_type([macros/0]).
 
 -include("gen.hrl").
+-include("instr.hrl").
 
 %%%----------------------------------------------------------------------
 %%% Debug
@@ -36,53 +37,6 @@
 
 %% List of attributes that should be stripped.
 -define(ATTR_STRIP, [type, spec, opaque, export_type, import_type]).
-
-%% Instrumented auto-imported functions of 'erlang' module.
--define(INSTR_ERL_FUN,
-        [{demonitor, 1},
-         {demonitor, 2},
-         {halt, 0},
-         {halt, 1},
-         {is_process_alive, 1},
-         {link, 1},
-         {monitor, 2},
-         {process_flag, 2},
-         {register, 2},
-         {spawn, 1},
-         {spawn, 3},
-         {spawn_link, 1},
-         {spawn_link, 3},
-         {spawn_monitor, 1},
-         {spawn_monitor, 3},
-         {spawn_opt, 2},
-         {spawn_opt, 4},
-         {unlink, 1},
-         {unregister, 1},
-         {whereis, 1}]).
-
-%% Instrumented functions called as erlang:FUNCTION.
--define(INSTR_ERL_MOD_FUN,
-        [{erlang, send, 2}, {erlang, send, 3}] ++
-            [{erlang, F, A} || {F, A} <- ?INSTR_ERL_FUN]).
-
-%% Instrumented functions from ets module.
--define(INSTR_ETS_FUN,
-        [{ets, insert_new, 2},
-         {ets, lookup, 2},
-         {ets, select_delete, 2},
-         {ets, insert, 2},
-         {ets, delete, 1},
-         {ets, delete, 2},
-         {ets, match_object, 2},
-         {ets, match_object, 3},
-         {ets, match_delete, 2},
-         {ets, new, 2},
-         {ets, info, 1},
-         {ets, info, 2},
-         {ets, foldl, 3}]).
-
-%% Instrumented mod:fun.
--define(INSTR_MOD_FUN, ?INSTR_ERL_MOD_FUN ++ ?INSTR_ETS_FUN).
 
 %%%----------------------------------------------------------------------
 %%% Types
@@ -124,7 +78,7 @@ instrument_and_compile(Files, Includes, Defines) ->
         end,
     MFBs = concuerror_util:pmap(InstrOne, Files),
     case lists:member('error', MFBs) of
-        true -> error;
+        true  -> error;
         false -> {ok, MFBs}
     end.
 
@@ -135,7 +89,7 @@ instrument_and_compile_one(File, Includes, Defines) ->
     concuerror_log:log("Validating file ~p...~n", [File]),
     OptIncludes = [{i, I} || I <- Includes],
     OptDefines  = [{d, M, V} || {M, V} <- Defines],
-    PreOptions = [strong_validation,verbose,return | OptIncludes++OptDefines],
+    PreOptions  = [strong_validation,verbose,return | OptIncludes++OptDefines],
     case compile:file(File, PreOptions) of
         {ok, Module, Warnings} ->
             %% Log warning messages.
@@ -238,10 +192,14 @@ instrument_tree(Tree) ->
 instrument_term(Tree) ->
     case erl_syntax:type(Tree) of
         application ->
+            PosArg = erl_syntax:abstract(erl_syntax:get_pos(Tree)),
             case get_mfa(Tree) of
-                no_instr -> Tree;
-                {normal, Mfa} -> instrument_application(Mfa);
-                {var, Mfa} -> instrument_var_application(Mfa)
+                no_instr ->
+                    Tree;
+                {normal, RepEntry, ArgTrees} ->
+                    instrument_application(PosArg, RepEntry, ArgTrees);
+                {var, Mfa} ->
+                    instrument_var_application(PosArg, Mfa)
             end;
         infix_expr ->
             Operator = erl_syntax:infix_expr_operator(Tree),
@@ -254,15 +212,15 @@ instrument_term(Tree) ->
         _Other -> Tree
     end.
 
-%% Return {ModuleAtom, FunctionAtom, [ArgTree]} for a function call that
-%% is going to be instrumented or 'no_instr' otherwise.
+%% Test if a function call is going to be instrumented
 get_mfa(Tree) ->
     Qualifier = erl_syntax:application_operator(Tree),
     ArgTrees  = erl_syntax:application_arguments(Tree),
+    Arity     = length(ArgTrees),
     case erl_syntax:type(Qualifier) of
         atom ->
             Function = erl_syntax:atom_value(Qualifier),
-            needs_instrument(Function, ArgTrees);
+            needs_instrument({Function, Arity}, ArgTrees);
         module_qualifier ->
             ModTree = erl_syntax:module_qualifier_argument(Qualifier),
             FunTree = erl_syntax:module_qualifier_body(Qualifier),
@@ -271,7 +229,7 @@ get_mfa(Tree) ->
                 true ->
                     Module = erl_syntax:atom_value(ModTree),
                     Function = erl_syntax:atom_value(FunTree),
-                    needs_instrument(Module, Function, ArgTrees);
+                    needs_instrument({Module, Function, Arity}, ArgTrees);
                 false -> {var, {ModTree, FunTree, ArgTrees}}
             end;
         _Other -> no_instr
@@ -287,38 +245,35 @@ has_atoms_only(Tree) ->
            lists:all(IsAtom, erl_syntax:qualified_name_segments(Tree))).
 
 
-%% Determine whether an auto-exported BIF call needs instrumentation.
-needs_instrument(Function, ArgTrees) ->
-    Arity = length(ArgTrees),
-    case lists:member({Function, Arity}, ?INSTR_ERL_FUN) of
-        true -> {normal, {erlang, Function, ArgTrees}};
-        false -> no_instr
+%% Determine whether a function call needs instrumentation.
+needs_instrument({Fun, Arity}=Key, ArgTrees) ->
+    case lists:keyfind(Key, 1, ?INSTR_MOD_FUN) of
+        false -> no_instr;
+        {_Key, RepFun} ->
+            {normal, {{erlang, Fun, Arity}, RepFun}, ArgTrees}
+    end;
+needs_instrument(Key, ArgTrees) ->
+    case lists:keyfind(Key, 1, ?INSTR_MOD_FUN) of
+        false    -> no_instr;
+        RepEntry -> {normal, RepEntry, ArgTrees}
     end.
 
-%% Determine whether a `foo:bar(...)` call needs instrumentation.
-needs_instrument(Module, Function, ArgTrees) ->
-    Arity = length(ArgTrees),
-    case lists:member({Module, Function, Arity}, ?INSTR_MOD_FUN) of
-        true -> {normal, {Module, Function, ArgTrees}};
-        false -> no_instr
-    end.
 
-instrument_application({erlang, Function, ArgTrees}) ->
+instrument_application(PosArg, {Key, RepAtom}, ArgTrees) ->
     RepMod = erl_syntax:atom(?REP_MOD),
-    RepFun = erl_syntax:atom(list_to_atom("rep_" ++ atom_to_list(Function))),
-    erl_syntax:application(RepMod, RepFun, ArgTrees);
-instrument_application({Module, Function, ArgTrees}) ->
-    RepMod = erl_syntax:atom(?REP_MOD),
-    RepFun = erl_syntax:atom(list_to_atom("rep_" ++ atom_to_list(Module)
-                                          ++ "_"
-                                          ++ atom_to_list(Function))),
-    erl_syntax:application(RepMod, RepFun, ArgTrees).
+    RepFun = erl_syntax:atom(RepAtom),
+    %% The key
+    KeyArg = erl_syntax:abstract(Key),
+    %% The function's arguments
+    RestArgs = erl_syntax:list(ArgTrees),
+    %% Create the instrumented application
+    erl_syntax:application(RepMod, RepFun, [KeyArg, PosArg, RestArgs]).
 
-instrument_var_application({ModTree, FunTree, ArgTrees}) ->
+instrument_var_application(PosArg, {ModTree, FunTree, ArgTrees}) ->
     RepMod = erl_syntax:atom(?REP_MOD),
     RepFun = erl_syntax:atom(rep_var),
     ArgList = erl_syntax:list(ArgTrees),
-    erl_syntax:application(RepMod, RepFun, [ModTree, FunTree, ArgList]).
+    erl_syntax:application(RepMod, RepFun, [PosArg, ModTree, FunTree, ArgList]).
 
 %% Instrument a receive expression.
 %% ----------------------------------------------------------------------
@@ -395,6 +350,8 @@ instrument_var_application({ModTree, FunTree, ArgTrees}) ->
 instrument_receive(Tree) ->
     %% Get old receive expression's clauses.
     OldClauses = erl_syntax:receive_expr_clauses(Tree),
+    %%Source code position
+    PosArg = erl_syntax:abstract(erl_syntax:get_pos(Tree)),
     case OldClauses of
         [] ->
             Timeout = erl_syntax:receive_expr_timeout(Tree),
@@ -402,7 +359,7 @@ instrument_receive(Tree) ->
             AfterBlock = erl_syntax:block_expr(Action),
             ModTree = erl_syntax:atom(?REP_MOD),
             FunTree = erl_syntax:atom(rep_receive_block),
-            Fun = erl_syntax:application(ModTree, FunTree, []),
+            Fun = erl_syntax:application(ModTree, FunTree, [PosArg]),
             transform_receive_timeout(Fun, AfterBlock, Timeout);
         _Other ->
             NewClauses = transform_receive_clauses(OldClauses),
@@ -424,7 +381,7 @@ instrument_receive(Tree) ->
                 end,
             RepReceive =
                 erl_syntax:application(Module, Function,
-                                       [FunExpr, HasTimeoutExpr]),
+                                       [PosArg, FunExpr, HasTimeoutExpr]),
             %% Create new receive expression.
             NewReceive = erl_syntax:receive_expr(NewClauses),
             %% Result is begin rep_receive(...), NewReceive end.
@@ -437,7 +394,7 @@ instrument_receive(Tree) ->
                     Action = erl_syntax:receive_expr_action(Tree),
                     RepMod = erl_syntax:atom(?REP_MOD),
                     RepFun = erl_syntax:atom(rep_after_notify),
-                    RepApp = erl_syntax:application(RepMod, RepFun, []),
+                    RepApp = erl_syntax:application(RepMod, RepFun, [PosArg]),
                     NewAction = [RepApp|Action],
                     %% receive NewPatterns -> NewActions after 0 -> NewAfter end
                     ZeroTimeout = erl_syntax:integer(0),
@@ -482,7 +439,9 @@ transform_receive_clause_regular(Clause) ->
     NewPattern = [erl_syntax:tuple([InstrAtom, PidVar, CV, OldPattern])],
     Module = erl_syntax:atom(?REP_MOD),
     Function = erl_syntax:atom(rep_receive_notify),
-    Arguments = [PidVar, CV, OldPattern],
+    %%Source code position
+    PosArg = erl_syntax:abstract(erl_syntax:get_pos(Clause)),
+    Arguments = [PosArg, PidVar, CV, OldPattern],
     Notify = erl_syntax:application(Module, Function, Arguments),
     NewBody = [Notify|OldBody],
     erl_syntax:clause(NewPattern, OldGuard, NewBody).
@@ -497,7 +456,9 @@ transform_receive_clause_special(Clause) ->
     OldBody = erl_syntax:clause_body(Clause),
     Module = erl_syntax:atom(?REP_MOD),
     Function = erl_syntax:atom(rep_receive_notify),
-    Arguments = [OldPattern],
+    %%Source code position
+    PosArg = erl_syntax:abstract(erl_syntax:get_pos(Clause)),
+    Arguments = [PosArg, OldPattern],
     Notify = erl_syntax:application(Module, Function, Arguments),
     NewBody = [Notify|OldBody],
     erl_syntax:clause([OldPattern], OldGuard, NewBody).
@@ -516,9 +477,11 @@ transform_receive_timeout(InfBlock, FrBlock, Timeout) ->
 %% Instrument a Pid ! Msg expression.
 %% Pid ! Msg is transformed into ?REP_MOD:rep_send(Pid, Msg).
 instrument_send(Tree) ->
+    PosArg = erl_syntax:abstract(erl_syntax:get_pos(Tree)),
     Dest = erl_syntax:infix_expr_left(Tree),
     Msg = erl_syntax:infix_expr_right(Tree),
-    instrument_application({erlang, send, [Dest, Msg]}).
+    RepEntry = lists:keyfind({erlang, send, 2}, 1, ?INSTR_MOD_FUN),
+    instrument_application(PosArg, RepEntry, [Dest, Msg]).
 
 %%%----------------------------------------------------------------------
 %%% Helper functions

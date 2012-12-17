@@ -19,6 +19,7 @@
 -export_type([ticket/0]).
 
 -include("gen.hrl").
+-include("instr.hrl").
 
 %% An error ticket containing all the informations about an error
 %% and the interleaving that caused it.

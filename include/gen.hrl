@@ -39,9 +39,6 @@
 -define(NT_USED, '_._used').
 -define(NT_TIMER, '_._timer').
 
-%% Module containing replacement functions.
--define(REP_MOD, concuerror_rep).
-
 %% Instrumented message atom.
 -define(INSTR_MSG, '_._instr_msg').
 

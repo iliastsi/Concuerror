@@ -14,38 +14,33 @@
 
 -module(concuerror_rep).
 
--export([spawn_fun_wrapper/1]).
+-export([spawn_fun_wrapper/1, rep_var/4]).
 
--export([rep_var/3, rep_send/2, rep_send/3]).
+-export([rep_send/3]).
 
--export([rep_spawn/1, rep_spawn/3,
-         rep_spawn_link/1, rep_spawn_link/3,
-         rep_spawn_opt/2, rep_spawn_opt/4]).
+-export([rep_spawn/3, rep_spawn_link/3,
+         rep_spawn_monitor/3, rep_spawn_opt/3]).
 
--export([rep_link/1, rep_unlink/1,
-         rep_spawn_monitor/1, rep_spawn_monitor/3,
-         rep_process_flag/2]).
+-export([rep_link/3, rep_unlink/3, rep_process_flag/3]).
 
--export([rep_receive/2, rep_receive_block/0,
-         rep_after_notify/0, rep_receive_notify/3,
-         rep_receive_notify/1]).
+-export([rep_receive/3, rep_receive_block/1,
+         rep_after_notify/1, rep_receive_notify/4,
+         rep_receive_notify/2]).
 
--export([rep_ets_insert_new/2, rep_ets_lookup/2, rep_ets_select_delete/2,
-         rep_ets_insert/2, rep_ets_delete/1, rep_ets_delete/2,
-         rep_ets_match_object/2, rep_ets_match_object/3,
-         rep_ets_info/1, rep_ets_info/2,
-         rep_ets_match_delete/2, rep_ets_new/2, rep_ets_foldl/3]).
+-export([rep_ets_insert_new/3, rep_ets_lookup/3, rep_ets_select_delete/3,
+         rep_ets_insert/3, rep_ets_delete/3,
+         rep_ets_match_object/3, rep_ets_info/3,
+         rep_ets_match_delete/3, rep_ets_new/3, rep_ets_foldl/3]).
 
--export([rep_register/2,
-         rep_is_process_alive/1,
-         rep_unregister/1,
-         rep_whereis/1]).
+-export([rep_register/3, rep_is_process_alive/3,
+         rep_unregister/3, rep_whereis/3]).
 
--export([rep_monitor/2, rep_demonitor/1, rep_demonitor/2]).
+-export([rep_monitor/3, rep_demonitor/3]).
 
--export([rep_halt/0, rep_halt/1]).
+-export([rep_halt/3]).
 
 -include("gen.hrl").
+-include("instr.hrl").
 
 %%%----------------------------------------------------------------------
 %%% Definitions and Types
@@ -54,73 +49,24 @@
 %% Return the calling process' LID.
 -define(LID_FROM_PID(Pid), concuerror_lid:from_pid(Pid)).
 
-%% The destination of a `send' operation.
--type dest() :: pid() | port() | atom() | {atom(), node()}.
-
-%% Callback function mapping.
--define(INSTR_MOD_FUN,
-        [{{erlang, demonitor, 1}, fun rep_demonitor/1},
-         {{erlang, demonitor, 2}, fun rep_demonitor/2},
-         {{erlang, halt, 0}, fun rep_halt/0},
-         {{erlang, halt, 1}, fun rep_halt/1},
-         {{erlang, is_process_alive, 1}, fun rep_is_process_alive/1},
-         {{erlang, link, 1}, fun rep_link/1},
-         {{erlang, monitor, 2}, fun rep_monitor/2},
-         {{erlang, process_flag, 2}, fun rep_process_flag/2},
-         {{erlang, register, 2}, fun rep_register/2},
-         {{erlang, spawn, 1}, fun rep_spawn/1},
-         {{erlang, spawn, 3}, fun rep_spawn/3},
-         {{erlang, spawn_link, 1}, fun rep_spawn_link/1},
-         {{erlang, spawn_link, 3}, fun rep_spawn_link/3},
-         {{erlang, spawn_monitor, 1}, fun rep_spawn_monitor/1},
-         {{erlang, spawn_monitor, 3}, fun rep_spawn_monitor/3},
-         {{erlang, spawn_opt, 2}, fun rep_spawn_opt/2},
-         {{erlang, spawn_opt, 4}, fun rep_spawn_opt/4},
-         {{erlang, unlink, 1}, fun rep_unlink/1},
-         {{erlang, unregister, 1}, fun rep_unregister/1},
-         {{erlang, whereis, 1}, fun rep_whereis/1},
-         {{ets, insert_new, 2}, fun rep_ets_insert_new/2},
-         {{ets, lookup, 2}, fun rep_ets_lookup/2},
-         {{ets, select_delete, 2}, fun rep_ets_select_delete/2},
-         {{ets, insert, 2}, fun rep_ets_insert/2},
-         {{ets, delete, 1}, fun rep_ets_delete/1},
-         {{ets, delete, 2}, fun rep_ets_delete/2},
-         {{ets, match_object, 2}, fun rep_ets_match_object/2},
-         {{ets, match_object, 3}, fun rep_ets_match_object/3},
-         {{ets, match_delete, 2}, fun rep_ets_match_delete/2},
-         {{ets, new, 2}, fun rep_ets_new/2},
-         {{ets, info, 1}, fun rep_ets_info/1},
-         {{ets, info, 2}, fun rep_ets_info/2},
-         {{ets, foldl, 3}, fun rep_ets_foldl/3}]).
-
 %%%----------------------------------------------------------------------
 %%% Callbacks
 %%%----------------------------------------------------------------------
 
 %% Handle Mod:Fun(Args) calls.
--spec rep_var(module(), atom(), [term()]) -> term().
-rep_var(Mod, Fun, Args) ->
+-spec rep_var(term(), module(), atom(), [term()]) -> term().
+rep_var(PosArg, Mod, Fun, Args) ->
     Key = {Mod, Fun, length(Args)},
     case lists:keyfind(Key, 1, ?INSTR_MOD_FUN) of
-        {Key, Callback} -> apply(Callback, Args);
+        {Key, RepFun} -> apply(?REP_MOD, RepFun, [Key, PosArg, Args]);
         false -> apply(Mod, Fun, Args)
     end.
 
-%% @spec: rep_demonitor(reference()) -> 'true'
-%% @doc: Replacement for `demonitor/1'.
-%%
-%% Just yield before demonitoring.
--spec rep_demonitor(reference()) -> 'true'.
-rep_demonitor(Ref) ->
+%% ---------------------------
+rep_demonitor(_Key, _PosArg, [Ref]) ->
     concuerror_sched:notify(demonitor, concuerror_lid:lookup_ref_lid(Ref)),
-    demonitor(Ref).
-
-%% @spec: rep_demonitor(reference(), ['flush' | 'info']) -> 'true'
-%% @doc: Replacement for `demonitor/2'.
-%%
-%% Just yield before demonitoring.
--spec rep_demonitor(reference(), ['flush' | 'info']) -> 'true'.
-rep_demonitor(Ref, Opts) ->
+    demonitor(Ref);
+rep_demonitor(_Key, _PosArg, [Ref, Opts]) ->
     concuerror_sched:notify(demonitor, concuerror_lid:lookup_ref_lid(Ref)),
     case lists:member(flush, Opts) of
         true ->
@@ -135,52 +81,30 @@ rep_demonitor(Ref, Opts) ->
     end,
     demonitor(Ref, Opts).
 
-%% @spec: rep_halt() -> no_return()
-%% @doc: Replacement for `halt/0'.
-%%
-%% Just send halt message and yield.
--spec rep_halt() -> no_return().
-rep_halt() ->
-    concuerror_sched:notify(halt, empty).
-
-%% @spec: rep_halt() -> no_return()
-%% @doc: Replacement for `halt/1'.
-%%
-%% Just send halt message and yield.
--spec rep_halt(non_neg_integer() | string()) -> no_return().
-rep_halt(Status) ->
+%% ---------------------------
+rep_halt(_Key, _PosArg, []) ->
+    concuerror_sched:notify(halt, empty);
+rep_halt(_Key, _PosArg, [Status]) ->
     concuerror_sched:notify(halt, Status).
 
-%% @spec: rep_is_process_alive(pid()) -> boolean()
-%% @doc: Replacement for `is_process_alive/1'.
--spec rep_is_process_alive(pid()) -> boolean().
-rep_is_process_alive(Pid) ->
+%% ---------------------------
+rep_is_process_alive(_Key, _PosArg, [Pid]) ->
     case ?LID_FROM_PID(Pid) of
         not_found -> ok;
         PLid -> concuerror_sched:notify(is_process_alive, PLid)
     end,
     is_process_alive(Pid).
 
-%% @spec: rep_link(pid() | port()) -> 'true'
-%% @doc: Replacement for `link/1'.
-%%
-%% Just yield before linking.
--spec rep_link(pid() | port()) -> 'true'.
-rep_link(Pid) ->
+%% ---------------------------
+rep_link(_Key, _PosArg, [Pid]) ->
     case ?LID_FROM_PID(Pid) of
         not_found -> ok;
         PLid -> concuerror_sched:notify(link, PLid)
     end,
     link(Pid).
 
-%% @spec: rep_monitor('process', pid() | {atom(), node()} | atom()) ->
-%%                           reference()
-%% @doc: Replacement for `monitor/2'.
-%%
-%% Just yield before monitoring.
--spec rep_monitor('process', pid() | {atom(), node()} | atom()) ->
-            reference().
-rep_monitor(Type, Item) ->
+%% ---------------------------
+rep_monitor(_Key, _PosArg, [Type, Item]) ->
     case ?LID_FROM_PID(find_pid(Item)) of
         not_found -> monitor(Type, Item);
         Lid ->
@@ -191,31 +115,8 @@ rep_monitor(Type, Item) ->
             Ref
     end.
 
-%% @spec: rep_process_flag('trap_exit', boolean()) -> boolean();
-%%                        ('error_handler', atom()) -> atom();
-%%                        ('min_heap_size', non_neg_integer()) ->
-%%                                non_neg_integer();
-%%                        ('min_bin_vheap_size', non_neg_integer()) ->
-%%                                non_neg_integer();
-%%                        ('priority', process_priority_level()) ->
-%%                                process_priority_level();
-%%                        ('save_calls', non_neg_integer()) ->
-%%                                non_neg_integer();
-%%                        ('sensitive', boolean()) -> boolean()
-%% @doc: Replacement for `process_flag/2'.
-%%
-%% Just yield before altering the process flag.
--type process_priority_level() :: 'max' | 'high' | 'normal' | 'low'.
--spec rep_process_flag('trap_exit', boolean()) -> boolean();
-                      ('error_handler', atom()) -> atom();
-                      ('min_heap_size', non_neg_integer()) -> non_neg_integer();
-                      ('min_bin_vheap_size', non_neg_integer()) ->
-                              non_neg_integer();
-                      ('priority', process_priority_level()) ->
-                              process_priority_level();
-                      ('save_calls', non_neg_integer()) -> non_neg_integer();
-                      ('sensitive', boolean()) -> boolean().
-rep_process_flag(trap_exit = Flag, Value) ->
+%% ---------------------------
+rep_process_flag(_Key, _PosArg, [trap_exit = Flag, Value]) ->
     {trap_exit, OldValue} = process_info(self(), trap_exit),
     case Value =:= OldValue of
         true -> ok;
@@ -226,7 +127,7 @@ rep_process_flag(trap_exit = Flag, Value) ->
             concuerror_sched:notify(process_flag, {Flag, Value, Links}, prev)
     end,
     process_flag(Flag, Value);
-rep_process_flag(Flag, Value) ->
+rep_process_flag(_Key, _PosArg, [Flag, Value]) ->
     process_flag(Flag, Value).
 
 find_my_links() ->
@@ -234,15 +135,8 @@ find_my_links() ->
     AllLids = [?LID_FROM_PID(Pid) || Pid <- AllPids],
     [KnownLid || KnownLid <- AllLids, KnownLid =/= not_found].                  
 
-%% @spec rep_receive(fun((term()) -> 'block' | 'continue'),
-%%                   integer() | 'infinity') -> 'ok'.
-%% @doc: Function called right before a receive statement.
-%%
-%% If a matching message is found in the process' message queue, continue
-%% to actual receive statement, else block and when unblocked do the same.
--spec rep_receive(fun((term()) -> 'block' | 'continue'),
-                  integer() | 'infinity') -> 'ok'.
-rep_receive(Fun, HasTimeout) ->
+%% ---------------------------
+rep_receive(_PosArg, Fun, HasTimeout) ->
     case ?LID_FROM_PID(self()) of
         not_found ->
             %% XXX: Uninstrumented process enters instrumented receive
@@ -292,46 +186,28 @@ rep_receive_match(Fun, [H|T]) ->
         continue -> continue
     end.
 
+%% ---------------------------
 %% Blocks forever (used for 'receive after infinity -> ...' expressions).
--spec rep_receive_block() -> no_return().
-rep_receive_block() ->
+rep_receive_block(PosArg) ->
     Fun = fun(_Message) -> block end,
-    rep_receive(Fun, infinity).
+    rep_receive(PosArg, Fun, infinity).
 
-%% @spec rep_after_notify() -> 'ok'
-%% @doc: Auxiliary function used in the `receive..after' statement
-%% instrumentation.
-%%
-%% Called first thing after an `after' clause has been entered.
--spec rep_after_notify() -> 'ok'.
-rep_after_notify() ->
+%% ---------------------------
+rep_after_notify(_PosArg) ->
     ok.
 
-%% @spec rep_receive_notify(pid(), term()) -> 'ok'
-%% @doc: Auxiliary function used in the `receive' statement instrumentation.
-%%
-%% Called first thing after a message has been received, to inform the scheduler
-%% about the message received and the sender.
--spec rep_receive_notify(pid(), dict(), term()) -> 'ok'.
-rep_receive_notify(From, CV, Msg) ->
+%% ---------------------------
+rep_receive_notify(_PosArg, From, CV, Msg) ->
     concuerror_sched:notify('receive', {From, CV, Msg}, prev),
     ok.
 
-%% @spec rep_receive_notify(term()) -> 'ok'
-%% @doc: Auxiliary function used in the `receive' statement instrumentation.
-%%
-%% Similar to rep_receive/2, but used to handle 'EXIT' and 'DOWN' messages.
--spec rep_receive_notify(term()) -> no_return().
-rep_receive_notify(_Msg) ->
+%% ---------------------------
+rep_receive_notify(_PosArg, _Msg) ->
     %% XXX: Received uninstrumented message
     ok.
 
-%% @spec rep_register(atom(), pid() | port()) -> 'true'
-%% @doc: Replacement for `register/2'.
-%%
-%% Just yield after registering.
--spec rep_register(atom(), pid() | port()) -> 'true'.
-rep_register(RegName, P) ->
+%% ---------------------------
+rep_register(_Key, _PosArg, [RegName, P]) ->
     case ?LID_FROM_PID(P) of
         not_found -> ok;
         PLid ->
@@ -339,14 +215,8 @@ rep_register(RegName, P) ->
     end,
     register(RegName, P).
 
-%% @spec rep_send(dest(), term()) -> term()
-%% @doc: Replacement for `send/2' (and the equivalent `!' operator).
-%%
-%% If the target has a registered LID then instrument the message
-%% and yield after sending. Otherwise, send the original message
-%% and continue without yielding.
--spec rep_send(dest(), term()) -> term().
-rep_send(Dest, Msg) ->
+%% ---------------------------
+rep_send(_Key, _PosArg, [Dest, Msg]) ->
     case ?LID_FROM_PID(self()) of
         not_found ->
             %% Unknown process sends using instrumented code. Allow it.
@@ -358,16 +228,8 @@ rep_send(Dest, Msg) ->
             SendLid = ?LID_FROM_PID(find_pid(Dest)),
             concuerror_sched:notify(send, {Dest, SendLid, Msg}, prev),
             Dest ! Msg
-    end.
-
-%% @spec rep_send(dest(), term(), ['nosuspend' | 'noconnect']) ->
-%%                      'ok' | 'nosuspend' | 'noconnect'
-%% @doc: Replacement for `send/3'.
-%%
-%% For now, call erlang:send/3, but ignore options in internal handling.
--spec rep_send(dest(), term(), ['nosuspend' | 'noconnect']) ->
-                      'ok' | 'nosuspend' | 'noconnect'.
-rep_send(Dest, Msg, Opt) ->
+    end;
+rep_send(_Key, _PosArg, [Dest, Msg, Opt]) ->
     case ?LID_FROM_PID(self()) of
         not_found ->
             %% Unknown process sends using instrumented code. Allow it.
@@ -381,14 +243,12 @@ rep_send(Dest, Msg, Opt) ->
             erlang:send(Dest, Msg, Opt)
     end.
 
-%% @spec rep_spawn(function()) -> pid()
-%% @doc: Replacement for `spawn/1'.
-%%
-%% The argument provided is the argument of the original spawn call.
-%% Before spawned, the new process has to yield.
--spec rep_spawn(function()) -> pid().
-rep_spawn(Fun) ->
-    spawn_center(spawn, Fun).
+%% ---------------------------
+rep_spawn(_Key, _PosArg, [Fun]) ->
+    spawn_center(spawn, Fun);
+rep_spawn(Key, PosArg, [Module, Function, Args]) ->
+    Fun = fun() -> apply(Module, Function, Args) end,
+    rep_spawn(Key, PosArg, [Fun]).
 
 spawn_center(Kind, Fun) ->
     Spawner =
@@ -475,68 +335,22 @@ find_my_registered_name() ->
         {registered_name, Name} -> {ok, Name}
     end.
 
-%% @spec rep_spawn(atom(), atom(), [term()]) -> pid()
-%% @doc: Replacement for `spawn/3'.
-%%
-%% See `rep_spawn/1'.
--spec rep_spawn(atom(), atom(), [term()]) -> pid().
-rep_spawn(Module, Function, Args) ->
+%% ---------------------------
+rep_spawn_link(_Key, _PosArg, [Fun]) ->
+    spawn_center(spawn_link, Fun);
+rep_spawn_link(Key, PosArg, [Module, Function, Args]) ->
     Fun = fun() -> apply(Module, Function, Args) end,
-    rep_spawn(Fun).
+    rep_spawn_link(Key, PosArg, [Fun]).
 
-%% @spec rep_spawn_link(function()) -> pid()
-%% @doc: Replacement for `spawn_link/1'.
-%%
-%% Before spawned, the new process has to yield.
--spec rep_spawn_link(function()) -> pid().
-
-rep_spawn_link(Fun) ->
-    spawn_center(spawn_link, Fun).
-
-%% @spec rep_spawn_link(atom(), atom(), [term()]) -> pid()
-%% @doc: Replacement for `spawn_link/3'.
-%%
-%% See `rep_spawn_link/1'.
--spec rep_spawn_link(atom(), atom(), [term()]) -> pid().
-rep_spawn_link(Module, Function, Args) ->
+%% ---------------------------
+rep_spawn_monitor(_Key, _PosArg, [Fun]) ->
+    spawn_center(spawn_monitor, Fun);
+rep_spawn_monitor(Key, PosArg, [Module, Function, Args]) ->
     Fun = fun() -> apply(Module, Function, Args) end,
-    rep_spawn_link(Fun).
+    rep_spawn_monitor(Key, PosArg, [Fun]).
 
-%% @spec rep_spawn_monitor(function()) -> {pid(), reference()}
-%% @doc: Replacement for `spawn_monitor/1'.
-%%
-%% Before spawned, the new process has to yield.
--spec rep_spawn_monitor(function()) -> {pid(), reference()}.
-rep_spawn_monitor(Fun) ->
-    spawn_center(spawn_monitor, Fun).
-
-%% @spec rep_spawn_monitor(atom(), atom(), [term()]) -> {pid(), reference()}
-%% @doc: Replacement for `spawn_monitor/3'.
-%%
-%% See rep_spawn_monitor/1.
--spec rep_spawn_monitor(atom(), atom(), [term()]) -> {pid(), reference()}.
-rep_spawn_monitor(Module, Function, Args) ->
-    Fun = fun() -> apply(Module, Function, Args) end,
-    rep_spawn_monitor(Fun).
-
-%% @spec rep_spawn_opt(function(),
-%%       ['link' | 'monitor' |
-%%                   {'priority', process_priority_level()} |
-%%        {'fullsweep_after', integer()} |
-%%        {'min_heap_size', integer()} |
-%%        {'min_bin_vheap_size', integer()}]) ->
-%%       pid() | {pid(), reference()}
-%% @doc: Replacement for `spawn_opt/2'.
-%%
-%% Before spawned, the new process has to yield.
--spec rep_spawn_opt(function(),
-                    ['link' | 'monitor' |
-                     {'priority', process_priority_level()} |
-                     {'fullsweep_after', integer()} |
-                     {'min_heap_size', integer()} |
-                     {'min_bin_vheap_size', integer()}]) ->
-                           pid() | {pid(), reference()}.
-rep_spawn_opt(Fun, Opt) ->
+%% ---------------------------
+rep_spawn_opt(_Key, _PosArg, [Fun, Opt]) ->
     case ?LID_FROM_PID(self()) of
         not_found -> spawn_opt(Fun, Opt);
         _Lid ->
@@ -546,57 +360,26 @@ rep_spawn_opt(Fun, Opt) ->
             %% Wait before using the PID to be sure that an LID is assigned
             concuerror_sched:wait(),
             Result
-    end.
-
-%% @spec rep_spawn_opt(atom(), atom(), [term()],
-%%       ['link' | 'monitor' |
-%%                   {'priority', process_priority_level()} |
-%%        {'fullsweep_after', integer()} |
-%%        {'min_heap_size', integer()} |
-%%        {'min_bin_vheap_size', integer()}]) ->
-%%       pid() | {pid(), reference()}
-%% @doc: Replacement for `spawn_opt/4'.
-%%
-%% Before spawned, the new process has to yield.
--spec rep_spawn_opt(atom(), atom(), [term()],
-                    ['link' | 'monitor' |
-                     {'priority', process_priority_level()} |
-                     {'fullsweep_after', integer()} |
-                     {'min_heap_size', integer()} |
-                     {'min_bin_vheap_size', integer()}]) ->
-                           pid() | {pid(), reference()}.
-
-rep_spawn_opt(Module, Function, Args, Opt) ->
+    end;
+rep_spawn_opt(Key, PosArg, [Module, Function, Args, Opt]) ->
     Fun = fun() -> apply(Module, Function, Args) end,
-    rep_spawn_opt(Fun, Opt).
+    rep_spawn_opt(Key, PosArg, [Fun, Opt]).
 
-%% @spec: rep_unlink(pid() | port()) -> 'true'
-%% @doc: Replacement for `unlink/1'.
-%%
-%% Just yield before unlinking.
--spec rep_unlink(pid() | port()) -> 'true'.
-rep_unlink(Pid) ->
+%% ---------------------------
+rep_unlink(_Key, _PosArg, [Pid]) ->
     case ?LID_FROM_PID(Pid) of
         not_found -> ok;
         PLid -> concuerror_sched:notify(unlink, PLid)
     end,
     unlink(Pid).
 
-%% @spec rep_unregister(atom()) -> 'true'
-%% @doc: Replacement for `unregister/1'.
-%%
-%% Just yield before unregistering.
--spec rep_unregister(atom()) -> 'true'.
-rep_unregister(RegName) ->
+%% ---------------------------
+rep_unregister(_Key, _PosArg, [RegName]) ->
     concuerror_sched:notify(unregister, RegName),
     unregister(RegName).
 
-%% @spec rep_whereis(atom()) -> pid() | port() | 'undefined'
-%% @doc: Replacement for `whereis/1'.
-%%
-%% Just yield before calling whereis/1.
--spec rep_whereis(atom()) -> pid() | port() | 'undefined'.
-rep_whereis(RegName) ->
+%% ---------------------------
+rep_whereis(_Key, _PosArg, [RegName]) ->
     concuerror_sched:notify(whereis, {RegName, unknown}),
     R = whereis(RegName),
     Value =
@@ -610,17 +393,9 @@ rep_whereis(RegName) ->
 %%%----------------------------------------------------------------------
 %%% ETS replacements
 %%%----------------------------------------------------------------------
--type tid() :: term().
--type tab() :: atom() | tid().
--type ets_new_option() :: ets_new_type() | ets_new_access() | named_table
-                        | {keypos,integer()} | {heir,pid(),term()} | {heir,none}
-                        | ets_new_tweaks().
--type ets_new_type()   :: set | ordered_set | bag | duplicate_bag.
--type ets_new_access() :: public | protected | private.
--type ets_new_tweaks() :: {write_concurrency,boolean()}
-                        | {read_concurrency,boolean()} | compressed.
--spec rep_ets_new(atom(), [ets_new_option()]) -> tid() | atom().
-rep_ets_new(Name, Options) ->
+
+%% ---------------------------
+rep_ets_new(_Key, _PosArg, [Name, Options]) ->
     concuerror_sched:notify(ets, {new, [unknown, Name, Options]}),
     try
         Tid = ets:new(Name, Options),
@@ -636,12 +411,12 @@ rep_ets_new(Name, Options) ->
             ets:new(Name, Options)
     end.
 
--spec rep_ets_insert(tid()|atom(), tuple()|[tuple()]) -> true.
-rep_ets_insert(Tab, Obj) ->
+%% ---------------------------
+rep_ets_insert(_Key, _PosArg, [Tab, Obj]) ->
     ets_insert_center(insert, Tab, Obj).
 
--spec rep_ets_insert_new(tid()|atom(), tuple()|[tuple()]) -> boolean().
-rep_ets_insert_new(Tab, Obj) ->
+%% ---------------------------
+rep_ets_insert_new(_Key, _PosArg, [Tab, Obj]) ->
     ets_insert_center(insert_new, Tab, Obj).
 
 ets_insert_center(Type, Tab, Obj) ->
@@ -663,63 +438,59 @@ ets_insert_center(Type, Tab, Obj) ->
             Ret
     end.
 
--spec rep_ets_lookup(tid()|atom(), term()) -> [tuple()].
-rep_ets_lookup(Tab, Key) ->
+%% ---------------------------
+rep_ets_lookup(_Key, _PosArg, [Tab, Key]) ->
     Lid = ?LID_FROM_PID(Tab),
     concuerror_sched:notify(ets, {lookup, [Lid, Tab, Key]}),
     ets:lookup(Tab, Key).
 
--spec rep_ets_delete(tid()|atom()) -> true.
-rep_ets_delete(Tab) ->
+%% ---------------------------
+rep_ets_delete(_Key, _PosArg, [Tab]) ->
     concuerror_sched:notify(ets, {delete, [?LID_FROM_PID(Tab), Tab]}),
-    ets:delete(Tab).
-
--spec rep_ets_delete(tid()|atom(), term()) -> true.
-rep_ets_delete(Tab, Key) ->
+    ets:delete(Tab);
+rep_ets_delete(_Key, _PosArg, [Tab, Key]) ->
     concuerror_sched:notify(ets, {delete, [?LID_FROM_PID(Tab), Tab, Key]}),
     ets:delete(Tab, Key).
 
--type match_spec()    :: [{match_pattern(), [term()], [term()]}].
--type match_pattern() :: atom() | tuple().
--spec rep_ets_select_delete(tid()|atom(), match_spec()) -> integer().
-rep_ets_select_delete(Tab, MatchSpec) ->
+%% ---------------------------
+rep_ets_select_delete(_Key, _PosArg, [Tab, MatchSpec]) ->
     concuerror_sched:notify(ets,
         {select_delete, [?LID_FROM_PID(Tab), Tab, MatchSpec]}),
     ets:select_delete(Tab, MatchSpec).
 
--spec rep_ets_match_delete(tab(), match_pattern()) -> true.
-rep_ets_match_delete(Tab, Pattern) ->
+%% ---------------------------
+rep_ets_match_delete(_Key, _PosArg, [Tab, Pattern]) ->
     concuerror_sched:notify(ets,
         {match_delete, [?LID_FROM_PID(Tab), Tab, Pattern]}),
     ets:match_delete(Tab, Pattern).
 
--spec rep_ets_match_object(tid()|atom(), tuple()) -> [tuple()].
-rep_ets_match_object(Tab, Pattern) ->
+%% ---------------------------
+rep_ets_match_object(_Key, _PosArg, [Continuation]) ->
+    %% XXX: this is so wrong
+    concuerror_sched:notify(ets,
+        {match_object, [?LID_FROM_PID(self()), Continuation]}),
+    ets:match_object(Continuation);
+rep_ets_match_object(_Key, _PosArg, [Tab, Pattern]) ->
     concuerror_sched:notify(ets,
         {match_object, [?LID_FROM_PID(Tab), Tab, Pattern]}),
-    ets:match_object(Tab, Pattern).
-
--spec rep_ets_match_object(tid()|atom(), tuple(), integer()) ->
-    {[[term()]],term()} | '$end_of_table'.
-rep_ets_match_object(Tab, Pattern, Limit) ->
+    ets:match_object(Tab, Pattern);
+rep_ets_match_object(_Key, _PosArg, [Tab, Pattern, Limit]) ->
     concuerror_sched:notify(ets,
         {match_object, [?LID_FROM_PID(Tab), Tab, Pattern, Limit]}),
     ets:match_object(Tab, Pattern, Limit).
 
--spec rep_ets_foldl(fun((term(), term()) -> term()), term(), tab()) -> term().
-rep_ets_foldl(Function, Acc, Tab) ->
+%% ---------------------------
+rep_ets_foldl(_Key, _PosArg, [Function, Acc, Tab]) ->
     concuerror_sched:notify(ets,
         {foldl, [?LID_FROM_PID(Tab), Function, Acc, Tab]}),
     ets:foldl(Function, Acc, Tab).
 
--spec rep_ets_info(tab()) -> [{atom(), term()}] | undefined.
-rep_ets_info(Tab) ->
+%% ---------------------------
+rep_ets_info(_Key, _PosArg, [Tab]) ->
     concuerror_sched:notify(ets,
         {info, [?LID_FROM_PID(Tab), Tab]}),
-    ets:info(Tab).
-
--spec rep_ets_info(tab(), atom()) -> term() | undefined.
-rep_ets_info(Tab, Item) ->
+    ets:info(Tab);
+rep_ets_info(_Key, _PosArg, [Tab, Item]) ->
     concuerror_sched:notify(ets,
         {info, [?LID_FROM_PID(Tab), Tab, Item]}),
     ets:info(Tab, Item).

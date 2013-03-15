@@ -125,6 +125,10 @@ analyze({Mod,Fun,Args}=Target, Files, Options) ->
                     "bound ~p... \n", [PreBound]),
                 %% Reset the internal state for the progress logger
                 concuerror_log:reset(),
+                %% Unregister some key processes
+                unregister(kernel_safe_sup),
+                unregister(net_sup),
+                %% Run all possible interleavings
                 {T1, _} = statistics(wall_clock),
                 Result = interleave(NewTarget, PreBound, Dpor, Options),
                 {T2, _} = statistics(wall_clock),

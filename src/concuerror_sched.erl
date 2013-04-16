@@ -255,7 +255,20 @@ start_target_op(Target) ->
     %% Initialize a new group leader
     GroupLeader = concuerror_io_server:new_group_leader(self()),
     {Mod, Fun, Args} = Target,
-    NewFun = fun() -> apply(Mod, Fun, Args) end,
+    NewFun =
+        fun() ->
+                conc__application_controller:start({application, kernel, []}),
+                conc__application:start(kernel),
+                conc__application:start(stdlib),
+                apply(Mod, Fun, Args),
+                conc__application:stop(conc__ssl),
+                conc__application:stop(public_key),
+                conc__application:stop(crypto),
+                conc__application:stop(stdlib),
+                conc__application:stop(kernel),
+                concuerror_rep:rep_send(conc__application_controller,
+                    {'EXIT', self(), shutdown})
+        end,
     SpawnFun = fun() -> concuerror_rep:spawn_fun_wrapper(NewFun) end,
     FirstPid = spawn(SpawnFun),
     %% Set our io_server as the group leader
